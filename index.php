@@ -10,6 +10,24 @@ $keluarBulanIni  = $conn->query("SELECT COALESCE(SUM(jumlah),0) as c FROM transa
 $trxHariIni      = $conn->query("SELECT COUNT(*) as c FROM transaksi WHERE tanggal=CURDATE()")->fetch_assoc()['c'];
 $stokMinimum     = $conn->query("SELECT b.*, k.nama_kategori FROM barang b LEFT JOIN kategori k ON b.kategori_id=k.id WHERE b.stok <= b.stok_minimum ORDER BY b.stok ASC LIMIT 5");
 $trxTerbaru      = $conn->query("SELECT t.*, b.nama_barang FROM transaksi t JOIN barang b ON t.barang_id=b.id ORDER BY t.created_at DESC LIMIT 7");
+
+$grafikData = $conn->query("
+    SELECT 
+        DATE_FORMAT(tanggal, '%d/%m') as tgl,
+        SUM(CASE WHEN tipe='masuk' THEN jumlah ELSE 0 END) as masuk,
+        SUM(CASE WHEN tipe='keluar' THEN jumlah ELSE 0 END) as keluar
+    FROM transaksi
+    WHERE tanggal >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+    GROUP BY tanggal
+    ORDER BY tanggal ASC
+");
+
+$labels = []; $dataMasuk = []; $dataKeluar = [];
+while($g = $grafikData->fetch_assoc()){
+    $labels[]     = $g['tgl'];
+    $dataMasuk[]  = (int)$g['masuk'];
+    $dataKeluar[] = (int)$g['keluar'];
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -20,6 +38,7 @@ $trxTerbaru      = $conn->query("SELECT t.*, b.nama_barang FROM transaksi t JOIN
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 <div class="layout">
@@ -68,6 +87,19 @@ $trxTerbaru      = $conn->query("SELECT t.*, b.nama_barang FROM transaksi t JOIN
                 <div class="stat-card">
                     <div class="stat-icon yellow"><i class="fa-solid fa-receipt"></i></div>
                     <div class="stat-info"><div class="label">Transaksi Hari Ini</div><div class="value"><?= $trxHariIni ?></div></div>
+                </div>
+            </div>
+
+            <!-- GRAFIK TAMBAHAN - DIPINDAH KE ATAS -->
+            <div class="card" style="margin-top:20px;margin-bottom:20px">
+                <div class="card-header">
+                    <span class="card-title">
+                        <i class="fa-solid fa-chart-line" style="color:var(--primary)"></i>
+                        Grafik Transaksi 7 Hari Terakhir
+                    </span>
+                </div>
+                <div class="card-body" style="padding:20px">
+                    <canvas id="grafikTransaksi" height="80"></canvas>
                 </div>
             </div>
 
@@ -128,6 +160,49 @@ $trxTerbaru      = $conn->query("SELECT t.*, b.nama_barang FROM transaksi t JOIN
     </main>
 </div>
 <script src="main.js"></script>
+<script>
+const ctx = document.getElementById('grafikTransaksi').getContext('2d');
+new Chart(ctx, {
+    type: 'bar',
+    data: {
+        labels: <?= json_encode($labels) ?>,
+        datasets: [
+            {
+                label: 'Barang Masuk',
+                data: <?= json_encode($dataMasuk) ?>,
+                backgroundColor: 'rgba(34, 197, 94, 0.7)',
+                borderColor: '#16a34a',
+                borderWidth: 1,
+                borderRadius: 6
+            },
+            {
+                label: 'Barang Keluar',
+                data: <?= json_encode($dataKeluar) ?>,
+                backgroundColor: 'rgba(239, 68, 68, 0.7)',
+                borderColor: '#dc2626',
+                borderWidth: 1,
+                borderRadius: 6
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: {
+                position: 'top'
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                ticks: {
+                    stepSize: 1
+                }
+            }
+        }
+    }
+});
+</script>
 </body>
 </html>
 <?php $conn->close(); ?>

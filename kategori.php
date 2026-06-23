@@ -54,6 +54,7 @@ $list = $conn->query("SELECT k.*, COUNT(b.id) as jml FROM kategori k LEFT JOIN b
             <a href="barang.php" class="nav-item"><i class="fa-solid fa-box"></i> Data Barang</a>
             <a href="kategori.php" class="nav-item active"><i class="fa-solid fa-tags"></i> Kategori</a>
             <div class="nav-label">Transaksi</div>
+            <a href="kasir.php" class="nav-item"><i class="fa-solid fa-cash-register"></i> Kasir POS</a>
             <a href="transaksi_masuk.php" class="nav-item"><i class="fa-solid fa-arrow-down"></i> Barang Masuk</a>
             <a href="transaksi_keluar.php" class="nav-item"><i class="fa-solid fa-arrow-up"></i> Barang Keluar</a>
             <div class="nav-label">Laporan</div>

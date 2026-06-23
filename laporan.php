@@ -35,6 +35,7 @@ $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_bara
             <a href="barang.php" class="nav-item"><i class="fa-solid fa-box"></i> Data Barang</a>
             <a href="kategori.php" class="nav-item"><i class="fa-solid fa-tags"></i> Kategori</a>
             <div class="nav-label">Transaksi</div>
+            <a href="kasir.php" class="nav-item"><i class="fa-solid fa-cash-register"></i> Kasir POS</a>
             <a href="transaksi_masuk.php" class="nav-item"><i class="fa-solid fa-arrow-down"></i> Barang Masuk</a>
             <a href="transaksi_keluar.php" class="nav-item"><i class="fa-solid fa-arrow-up"></i> Barang Keluar</a>
             <div class="nav-label">Laporan</div>
@@ -137,8 +138,7 @@ $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_bara
                     <td><?= $r['satuan'] ?></td>
                     <td>Rp <?= number_format($r['harga_satuan'],0,',','.') ?></td>
                     <td style="font-weight:600">Rp <?= number_format($r['total_harga'],0,',','.') ?></td>
-                    <td style="color:var(--gray)"><?= htmlspecialchars($r['keterangan'])??'-' ?></td>
-                </tr>
+                <td style="color:var(--gray)"><?= htmlspecialchars($r['keterangan'] ?? '-') ?></td>                </tr>
                 <?php endwhile; ?>
                 <?php if ($laporan->num_rows > 0): ?>
                 <tr style="background:var(--gray-light);font-weight:700">
