@@ -3,18 +3,125 @@ require_once 'auth.php';
 require_once 'database.php';
 $conn = getConnection();
 
-$tipe      = isset($_GET['tipe']) ? $conn->real_escape_string($_GET['tipe']) : '';
-$dari      = isset($_GET['dari']) && $_GET['dari'] ? $_GET['dari'] : date('Y-m-01');
-$sampai    = isset($_GET['sampai']) && $_GET['sampai'] ? $_GET['sampai'] : date('Y-m-d');
+/* ---------- Ambil & validasi filter ---------- */
+function isValidDate($d) {
+    $dt = DateTime::createFromFormat('Y-m-d', $d);
+    return $dt && $dt->format('Y-m-d') === $d;
+}
+
+$tipeRaw   = $_GET['tipe'] ?? '';
+$tipe      = in_array($tipeRaw, ['masuk', 'keluar'], true) ? $tipeRaw : '';
+
+$dariRaw   = $_GET['dari'] ?? '';
+$sampaiRaw = $_GET['sampai'] ?? '';
+$dari      = isValidDate($dariRaw) ? $dariRaw : date('Y-m-01');
+$sampai    = isValidDate($sampaiRaw) ? $sampaiRaw : date('Y-m-d');
+
+// Jaga-jaga kalau user isi terbalik (dari > sampai), tukar otomatis
+if ($dari > $sampai) { [$dari, $sampai] = [$sampai, $dari]; }
+
 $barang_id = isset($_GET['barang_id']) ? (int)$_GET['barang_id'] : 0;
 
-$where = "WHERE t.tanggal BETWEEN '$dari' AND '$sampai'";
-if ($tipe === 'masuk' || $tipe === 'keluar') $where .= " AND t.tipe='$tipe'";
-if ($barang_id > 0) $where .= " AND t.barang_id=$barang_id";
+// Rentang datetime penuh: 00:00:00 s/d 23:59:59 supaya transaksi di hari
+// terakhir ikut kehitung walau kolom tanggal berformat datetime.
+$dariFull   = $dari . ' 00:00:00';
+$sampaiFull = $sampai . ' 23:59:59';
 
-$laporan = $conn->query("SELECT t.*,b.nama_barang,b.kode_barang,b.satuan,k.nama_kategori FROM transaksi t JOIN barang b ON t.barang_id=b.id LEFT JOIN kategori k ON b.kategori_id=k.id $where ORDER BY t.tanggal DESC,t.created_at DESC");
-$summary = $conn->query("SELECT SUM(CASE WHEN tipe='masuk' THEN jumlah ELSE 0 END) as total_masuk, SUM(CASE WHEN tipe='keluar' THEN jumlah ELSE 0 END) as total_keluar, SUM(CASE WHEN tipe='keluar' THEN total_harga ELSE 0 END) as nilai_keluar, COUNT(*) as total_trx FROM transaksi t $where")->fetch_assoc();
+/* ---------- Query pakai prepared statement (aman dari SQL injection) ---------- */
+$sql = "SELECT t.*, b.nama_barang, b.kode_barang, b.satuan, k.nama_kategori
+        FROM transaksi t
+        JOIN barang b ON t.barang_id = b.id
+        LEFT JOIN kategori k ON b.kategori_id = k.id
+        WHERE t.tanggal BETWEEN ? AND ?";
+$types  = 'ss';
+$params = [$dariFull, $sampaiFull];
+
+if ($tipe !== '') {
+    $sql .= " AND t.tipe = ?";
+    $types .= 's';
+    $params[] = $tipe;
+}
+if ($barang_id > 0) {
+    $sql .= " AND t.barang_id = ?";
+    $types .= 'i';
+    $params[] = $barang_id;
+}
+$sql .= " ORDER BY t.tanggal DESC, t.created_at DESC";
+
+$stmt = $conn->prepare($sql);
+$stmt->bind_param($types, ...$params);
+$stmt->execute();
+$laporan = $stmt->get_result();
+
+/* ---------- Handle unduh rekap (CSV) — pakai filter yang sama ---------- */
+if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+    while (ob_get_level()) ob_end_clean();
+
+    $filename = 'rekap-laporan_' . $dari . '_sd_' . $sampai . '.csv';
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF"); // BOM biar Excel baca UTF-8 (huruf é, dsb) dengan benar
+
+    fputcsv($out, ['No. Transaksi', 'Tanggal', 'Tipe', 'Kode', 'Nama Barang', 'Kategori', 'Jumlah', 'Satuan', 'Harga Satuan', 'Total', 'Keterangan']);
+
+    $grandExport = 0;
+    while ($r = $laporan->fetch_assoc()) {
+        $grandExport += $r['total_harga'];
+        fputcsv($out, [
+            $r['no_transaksi'],
+            date('d/m/Y', strtotime($r['tanggal'])),
+            $r['tipe'] === 'masuk' ? 'Masuk' : 'Keluar',
+            $r['kode_barang'],
+            $r['nama_barang'],
+            $r['nama_kategori'] ?? '-',
+            ($r['tipe'] === 'masuk' ? '+' : '-') . $r['jumlah'],
+            $r['satuan'],
+            $r['harga_satuan'],
+            $r['total_harga'],
+            $r['keterangan'] ?? '-',
+        ]);
+    }
+    fputcsv($out, []);
+    fputcsv($out, ['', '', '', '', '', '', '', '', '', 'Grand Total', $grandExport]);
+    fclose($out);
+    $conn->close();
+    exit;
+}
+
+/* ---------- Summary (query terpisah, filter sama) ---------- */
+$sqlSummary = "SELECT
+        SUM(CASE WHEN tipe='masuk' THEN jumlah ELSE 0 END) as total_masuk,
+        SUM(CASE WHEN tipe='keluar' THEN jumlah ELSE 0 END) as total_keluar,
+        SUM(CASE WHEN tipe='keluar' THEN total_harga ELSE 0 END) as nilai_keluar,
+        COUNT(*) as total_trx
+    FROM transaksi t
+    WHERE t.tanggal BETWEEN ? AND ?" .
+    ($tipe !== '' ? " AND t.tipe = ?" : "") .
+    ($barang_id > 0 ? " AND t.barang_id = ?" : "");
+
+$stmtSum = $conn->prepare($sqlSummary);
+$stmtSum->bind_param($types, ...$params);
+$stmtSum->execute();
+$summary = $stmtSum->get_result()->fetch_assoc();
+
 $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_barang");
+
+// Query utama sudah "terpakai" untuk summary di atas via statement terpisah,
+// jadi ambil ulang result set laporan untuk ditampilkan di tabel HTML.
+$stmt2 = $conn->prepare($sql);
+$stmt2->bind_param($types, ...$params);
+$stmt2->execute();
+$laporan = $stmt2->get_result();
+
+// Build query string filter aktif (dipakai buat tombol Unduh & pagination link)
+$filterQuery = http_build_query([
+    'dari'      => $dari,
+    'sampai'    => $sampai,
+    'tipe'      => $tipe,
+    'barang_id' => $barang_id ?: '',
+]);
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -62,11 +169,11 @@ $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_bara
         <form method="GET" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
             <div class="form-group">
                 <label>Dari</label>
-                <input type="date" name="dari" class="form-control" value="<?= $dari ?>">
+                <input type="date" name="dari" class="form-control" value="<?= htmlspecialchars($dari) ?>">
             </div>
             <div class="form-group">
                 <label>Sampai</label>
-                <input type="date" name="sampai" class="form-control" value="<?= $sampai ?>">
+                <input type="date" name="sampai" class="form-control" value="<?= htmlspecialchars($sampai) ?>">
             </div>
             <div class="form-group">
                 <label>Tipe</label>
@@ -88,6 +195,9 @@ $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_bara
             <div style="display:flex;gap:8px">
                 <button type="submit" class="btn btn-primary"><i class="fa-solid fa-search"></i> Tampilkan</button>
                 <a href="laporan.php" class="btn btn-secondary">Reset</a>
+                <a href="laporan.php?<?= $filterQuery ?>&export=csv" class="btn btn-secondary" style="background:#15803d;color:#fff;border-color:#15803d">
+                    <i class="fa-solid fa-file-arrow-down"></i> Unduh Rekap
+                </a>
             </div>
         </form>
     </div>
@@ -128,17 +238,18 @@ $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_bara
                 <?php $no=1; $grand=0; while($r=$laporan->fetch_assoc()): $grand+=$r['total_harga']; ?>
                 <tr>
                     <td><?= $no++ ?></td>
-                    <td style="font-size:12px;font-weight:700"><?= $r['no_transaksi'] ?></td>
+                    <td style="font-size:12px;font-weight:700"><?= htmlspecialchars($r['no_transaksi']) ?></td>
                     <td><?= date('d/m/Y',strtotime($r['tanggal'])) ?></td>
                     <td><?= $r['tipe']==='masuk' ? '<span class="badge badge-success"><i class="fa-solid fa-arrow-down"></i> Masuk</span>' : '<span class="badge badge-danger"><i class="fa-solid fa-arrow-up"></i> Keluar</span>' ?></td>
-                    <td><code style="background:var(--gray-light);padding:2px 6px;border-radius:4px;font-size:12px"><?= $r['kode_barang'] ?></code></td>
+                    <td><code style="background:var(--gray-light);padding:2px 6px;border-radius:4px;font-size:12px"><?= htmlspecialchars($r['kode_barang']) ?></code></td>
                     <td style="font-weight:600"><?= htmlspecialchars($r['nama_barang']) ?></td>
                     <td><?= htmlspecialchars($r['nama_kategori']??'-') ?></td>
                     <td style="font-weight:700;color:<?= $r['tipe']==='masuk'?'var(--success)':'var(--danger)' ?>"><?= $r['tipe']==='masuk'?'+':'-' ?><?= $r['jumlah'] ?></td>
                     <td><?= $r['satuan'] ?></td>
                     <td>Rp <?= number_format($r['harga_satuan'],0,',','.') ?></td>
                     <td style="font-weight:600">Rp <?= number_format($r['total_harga'],0,',','.') ?></td>
-                <td style="color:var(--gray)"><?= htmlspecialchars($r['keterangan'] ?? '-') ?></td>                </tr>
+                    <td style="color:var(--gray)"><?= htmlspecialchars($r['keterangan'] ?? '-') ?></td>
+                </tr>
                 <?php endwhile; ?>
                 <?php if ($laporan->num_rows > 0): ?>
                 <tr style="background:var(--gray-light);font-weight:700">
@@ -147,7 +258,7 @@ $barangList = $conn->query("SELECT id,nama_barang FROM barang ORDER BY nama_bara
                     <td></td>
                 </tr>
                 <?php else: ?>
-                <tr><td colspan="12" style="text-align:center;padding:40px;color:var(--gray)">Tidak ada data</td></tr>
+                <tr><td colspan="12" style="text-align:center;padding:40px;color:var(--gray)">Tidak ada data untuk filter ini</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

@@ -201,6 +201,35 @@
             border-radius: 10px;
             padding: 14px;
             margin-bottom: 14px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+
+        .card-thumb {
+            width: 56px;
+            height: 56px;
+            border-radius: 8px;
+            overflow: hidden;
+            flex-shrink: 0;
+            background: #fff;
+            border: 1px solid #e0e7ff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }
+
+        .card-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .card-body {
+            flex: 1;
+            min-width: 0;
         }
 
         .card h3 {
@@ -233,6 +262,34 @@
             padding: 12px 14px;
             margin-bottom: 10px;
             background: #fafafa;
+            display: flex;
+            gap: 12px;
+        }
+
+        .cart-thumb {
+            width: 48px;
+            height: 48px;
+            border-radius: 8px;
+            overflow: hidden;
+            flex-shrink: 0;
+            background: #fff;
+            border: 1px solid #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .cart-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .cart-item-body {
+            flex: 1;
+            min-width: 0;
         }
 
         .cart-item strong {
@@ -583,12 +640,23 @@
 </audio>
 
 <script>
+    // folder tempat gambar barang disimpan (samakan dengan barang.php / transaksi_keluar.php)
+    const UPLOAD_URL = 'uploads/barang/';
+
     let cart = [];
     let isScanning = true;
     let lastInvoice = '';
     let lastTotal = 0;
     let lastBayar = 0;
     let lastCart = [];
+
+    // bikin HTML thumbnail: gambar kalau ada, fallback ikon kotak kalau tidak
+    function thumbHtml(gambar, nama, cssClass) {
+        if (gambar) {
+            return `<div class="${cssClass}"><img src="${UPLOAD_URL}${gambar}" alt="${nama}" onerror="this.onerror=null;this.parentElement.innerHTML='📦';"></div>`;
+        }
+        return `<div class="${cssClass}">📦</div>`;
+    }
 
     function renderCart(){
 
@@ -609,13 +677,16 @@
 
             html += `
                 <div class="cart-item">
-                    <strong>${item.nama}</strong>
-                    <div class="harga">Rp ${item.harga.toLocaleString()} / pcs</div>
-                    <div class="qty-row">
-                        <button class="qty-btn" onclick="kurangQty(${index})">−</button>
-                        <span class="qty-num">${item.qty}</span>
-                        <button class="qty-btn" onclick="tambahQty(${index})">+</button>
-                        <button class="btn-hapus" onclick="hapusItem(${index})">Hapus</button>
+                    ${thumbHtml(item.gambar, item.nama, 'cart-thumb')}
+                    <div class="cart-item-body">
+                        <strong>${item.nama}</strong>
+                        <div class="harga">Rp ${item.harga.toLocaleString()} / pcs</div>
+                        <div class="qty-row">
+                            <button class="qty-btn" onclick="kurangQty(${index})">−</button>
+                            <span class="qty-num">${item.qty}</span>
+                            <button class="qty-btn" onclick="tambahQty(${index})">+</button>
+                            <button class="btn-hapus" onclick="hapusItem(${index})">Hapus</button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -801,10 +872,13 @@
 
             document.getElementById('hasil').innerHTML = `
                 <div class="card">
-                    <h3>${barang.nama_barang}</h3>
-                    <p>Kode : ${barang.kode_barang}</p>
-                    <p>Harga : Rp ${Number(barang.harga_jual).toLocaleString()}</p>
-                    <p>Stok : ${barang.stok}</p>
+                    ${thumbHtml(barang.gambar, barang.nama_barang, 'card-thumb')}
+                    <div class="card-body">
+                        <h3>${barang.nama_barang}</h3>
+                        <p>Kode : ${barang.kode_barang}</p>
+                        <p>Harga : Rp ${Number(barang.harga_jual).toLocaleString()}</p>
+                        <p>Stok : ${barang.stok}</p>
+                    </div>
                 </div>
             `;
 
@@ -817,6 +891,7 @@
                     id: barang.id,
                     nama: barang.nama_barang,
                     harga: Number(barang.harga_jual),
+                    gambar: barang.gambar || '',
                     qty: 1
                 });
             }

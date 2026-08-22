@@ -5,11 +5,57 @@ $pageTitle = 'Data Barang';
 $conn = getConnection();
 $pesan = '';
 
+// Folder tempat menyimpan gambar barang
+define('UPLOAD_DIR', __DIR__ . '/uploads/barang/');
+define('UPLOAD_URL', 'uploads/barang/');
+if (!is_dir(UPLOAD_DIR)) {
+    @mkdir(UPLOAD_DIR, 0755, true);
+}
+
 function generateKode($conn) {
     $r = $conn->query("SELECT kode_barang FROM barang ORDER BY id DESC LIMIT 1");
     if ($r->num_rows === 0) return 'BRG001';
     $last = $r->fetch_assoc()['kode_barang'];
     return 'BRG' . str_pad((int)substr($last,3)+1, 3, '0', STR_PAD_LEFT);
+}
+
+/**
+ * Proses upload gambar barang.
+ * Mengembalikan nama file baru jika berhasil, null jika tidak ada file diupload,
+ * atau melempar Exception jika file tidak valid.
+ */
+function uploadGambarBarang($fileField = 'gambar') {
+    if (empty($_FILES[$fileField]) || $_FILES[$fileField]['error'] === UPLOAD_ERR_NO_FILE) {
+        return null; // tidak ada file yang diupload
+    }
+    $file = $_FILES[$fileField];
+
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        throw new Exception('Upload gambar gagal (kode error: '.$file['error'].')');
+    }
+
+    $allowedExt  = ['jpg','jpeg','png','webp'];
+    $allowedMime = ['image/jpeg','image/png','image/webp'];
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+
+    if (!in_array($ext, $allowedExt) || !in_array($file['type'], $allowedMime)) {
+        throw new Exception('Format gambar harus JPG, PNG, atau WEBP.');
+    }
+    if ($file['size'] > 2 * 1024 * 1024) { // maks 2MB
+        throw new Exception('Ukuran gambar maksimal 2MB.');
+    }
+
+    $newName = 'brg_' . uniqid() . '.' . $ext;
+    if (!move_uploaded_file($file['tmp_name'], UPLOAD_DIR . $newName)) {
+        throw new Exception('Gagal menyimpan file gambar ke server.');
+    }
+    return $newName;
+}
+
+function hapusFileGambar($namaFile) {
+    if (!empty($namaFile) && file_exists(UPLOAD_DIR . $namaFile)) {
+        @unlink(UPLOAD_DIR . $namaFile);
+    }
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -25,10 +71,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stok  = (int)$_POST['stok'];
         $smin  = (int)$_POST['stok_minimum'];
         $desk  = $conn->real_escape_string(trim($_POST['deskripsi']));
-        if ($conn->query("INSERT INTO barang (kode_barang,nama_barang,kategori_id,satuan,harga_beli,harga_jual,stok,stok_minimum,deskripsi) VALUES ('$kode','$nama',$katid,'$sat',$hb,$hj,$stok,$smin,'$desk')"))
-            $pesan = ['type'=>'success','text'=>'Barang berhasil ditambahkan!'];
-        else
-            $pesan = ['type'=>'danger','text'=>'Gagal: '.$conn->error];
+
+        try {
+            $gambar = uploadGambarBarang('gambar');
+            $gambarSql = $gambar ? "'".$conn->real_escape_string($gambar)."'" : "NULL";
+
+            if ($conn->query("INSERT INTO barang (kode_barang,nama_barang,kategori_id,satuan,harga_beli,harga_jual,stok,stok_minimum,deskripsi,gambar) VALUES ('$kode','$nama',$katid,'$sat',$hb,$hj,$stok,$smin,'$desk',$gambarSql)"))
+                $pesan = ['type'=>'success','text'=>'Barang berhasil ditambahkan!'];
+            else {
+                if ($gambar) hapusFileGambar($gambar);
+                $pesan = ['type'=>'danger','text'=>'Gagal: '.$conn->error];
+            }
+        } catch (Exception $e) {
+            $pesan = ['type'=>'danger','text'=>$e->getMessage()];
+        }
     }
 
     if ($action === 'edit') {
@@ -38,20 +94,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sat   = $conn->real_escape_string($_POST['satuan']);
         $hb    = (float)$_POST['harga_beli'];
         $hj    = (float)$_POST['harga_jual'];
+        $stok  = (int)$_POST['stok']; // <-- DITAMBAHKAN: Ambil nilai stok dari form
         $smin  = (int)$_POST['stok_minimum'];
         $desk  = $conn->real_escape_string(trim($_POST['deskripsi']));
-        if ($conn->query("UPDATE barang SET nama_barang='$nama',kategori_id=$katid,satuan='$sat',harga_beli=$hb,harga_jual=$hj,stok_minimum=$smin,deskripsi='$desk' WHERE id=$id"))
-            $pesan = ['type'=>'success','text'=>'Barang berhasil diperbarui!'];
-        else
-            $pesan = ['type'=>'danger','text'=>'Gagal: '.$conn->error];
+
+        try {
+            $gambarBaru = uploadGambarBarang('gambar');
+            $hapusGambarLama = isset($_POST['hapus_gambar']) && $_POST['hapus_gambar'] === '1';
+
+            $row = $conn->query("SELECT gambar FROM barang WHERE id=$id")->fetch_assoc();
+            $gambarLama = $row['gambar'] ?? null;
+
+            $setGambar = '';
+            if ($gambarBaru) {
+                // ada gambar baru diupload -> hapus gambar lama, pakai yang baru
+                if ($gambarLama) hapusFileGambar($gambarLama);
+                $setGambar = ", gambar='".$conn->real_escape_string($gambarBaru)."'";
+            } elseif ($hapusGambarLama) {
+                // user memilih hapus gambar tanpa upload gambar baru
+                if ($gambarLama) hapusFileGambar($gambarLama);
+                $setGambar = ", gambar=NULL";
+            }
+
+            // <-- DITAMBAHKAN: stok=$stok pada query UPDATE
+            if ($conn->query("UPDATE barang SET nama_barang='$nama',kategori_id=$katid,satuan='$sat',harga_beli=$hb,harga_jual=$hj,stok=$stok,stok_minimum=$smin,deskripsi='$desk'$setGambar WHERE id=$id"))
+                $pesan = ['type'=>'success','text'=>'Barang berhasil diperbarui!'];
+            else {
+                if ($gambarBaru) hapusFileGambar($gambarBaru);
+                $pesan = ['type'=>'danger','text'=>'Gagal: '.$conn->error];
+            }
+        } catch (Exception $e) {
+            $pesan = ['type'=>'danger','text'=>$e->getMessage()];
+        }
     }
 }
 
 if (isset($_GET['hapus'])) {
     $id = (int)$_GET['hapus'];
-    if ($conn->query("DELETE FROM barang WHERE id=$id"))
+    $row = $conn->query("SELECT gambar FROM barang WHERE id=$id")->fetch_assoc();
+    if ($conn->query("DELETE FROM barang WHERE id=$id")) {
+        if ($row && !empty($row['gambar'])) hapusFileGambar($row['gambar']);
         $pesan = ['type'=>'success','text'=>'Barang berhasil dihapus!'];
-    else
+    } else
         $pesan = ['type'=>'danger','text'=>'Gagal menghapus!'];
 }
 
@@ -68,6 +152,37 @@ $newKode     = generateKode($conn);
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
+    <style>
+        .thumb-barang {
+            width: 42px; height: 42px; border-radius: 8px; object-fit: cover;
+            border: 1px solid var(--gray-light, #e5e7eb); background: var(--gray-lighter, #f9fafb);
+        }
+        .thumb-barang-placeholder {
+            width: 42px; height: 42px; border-radius: 8px;
+            border: 1px solid var(--gray-light, #e5e7eb); background: var(--gray-lighter, #f9fafb);
+            display: flex; align-items: center; justify-content: center; color: var(--gray, #9ca3af);
+        }
+        .upload-gambar-box {
+            display: flex; align-items: center; gap: 12px;
+            border: 1px dashed var(--gray-light, #d1d5db); border-radius: 10px;
+            padding: 10px; margin-bottom: 12px;
+        }
+        .upload-preview {
+            width: 64px; height: 64px; border-radius: 10px; object-fit: cover;
+            background: var(--gray-lighter, #f9fafb); border: 1px solid var(--gray-light, #e5e7eb);
+            flex-shrink: 0;
+        }
+        .upload-preview-placeholder {
+            width: 64px; height: 64px; border-radius: 10px;
+            background: var(--gray-lighter, #f9fafb); border: 1px solid var(--gray-light, #e5e7eb);
+            display: flex; align-items: center; justify-content: center; color: var(--gray, #9ca3af);
+            font-size: 22px; flex-shrink: 0;
+        }
+        .upload-gambar-info { flex: 1; }
+        .upload-gambar-info input[type="file"] { font-size: 12.5px; }
+        .upload-gambar-info small { display:block; color: var(--gray, #6b7280); font-size: 11px; margin-top: 4px; }
+        .link-hapus-gambar { font-size: 12px; color: var(--danger,#ef4444); cursor: pointer; margin-top: 4px; display: inline-block; }
+    </style>
 </head>
 <body>
 <div class="layout">
@@ -116,12 +231,20 @@ $newKode     = generateKode($conn);
     <div class="table-wrap">
         <table id="mainTable">
             <thead>
-                <tr><th>#</th><th>Kode</th><th>Nama Barang</th><th>Kategori</th><th>Satuan</th><th>Harga Beli</th><th>Harga Jual</th><th>Stok</th><th>Status</th><th>Aksi</th></tr>
+                <tr><th>#</th><th>Gambar</th><th>Kode</th><th>Nama Barang</th><th>Kategori</th><th>Satuan</th><th>Harga Beli</th><th>Harga Jual</th><th>Stok</th><th>Status</th><th>Aksi</th></tr>
             </thead>
             <tbody>
                 <?php $no=1; while($r=$barangList->fetch_assoc()): ?>
                 <tr>
                     <td><?= $no++ ?></td>
+                    <td>
+                        <?php if (!empty($r['gambar'])): ?>
+                            <img class="thumb-barang" src="<?= UPLOAD_URL . htmlspecialchars($r['gambar']) ?>" alt="<?= htmlspecialchars($r['nama_barang']) ?>"
+                                 onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb-barang-placeholder',innerHTML:'<i class=\'fa-solid fa-image\'></i>'}));">
+                        <?php else: ?>
+                            <div class="thumb-barang-placeholder"><i class="fa-solid fa-image"></i></div>
+                        <?php endif; ?>
+                    </td>
                     <td><code style="background:var(--gray-light);padding:2px 6px;border-radius:4px"><?= $r['kode_barang'] ?></code></td>
                     <td style="font-weight:600"><?= htmlspecialchars($r['nama_barang']) ?></td>
                     <td><?= $r['nama_kategori'] ?? '-' ?></td>
@@ -154,9 +277,17 @@ $newKode     = generateKode($conn);
             <span class="modal-title">Tambah Barang</span>
             <button class="modal-close" onclick="closeModal('modalTambah')"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <form method="POST">
+        <form method="POST" enctype="multipart/form-data">
             <input type="hidden" name="action" value="tambah">
             <div class="modal-body">
+                <div class="upload-gambar-box">
+                    <div class="upload-preview-placeholder" id="previewTambah"><i class="fa-solid fa-image"></i></div>
+                    <div class="upload-gambar-info">
+                        <label>Foto Barang</label>
+                        <input type="file" name="gambar" accept="image/jpeg,image/png,image/webp" onchange="previewGambar(this,'previewTambah')">
+                        <small>JPG/PNG/WEBP, maks 2MB. Opsional.</small>
+                    </div>
+                </div>
                 <div class="form-grid form-grid-2" style="margin-bottom:12px">
                     <div class="form-group">
                         <label>Kode Barang</label>
@@ -213,10 +344,26 @@ $newKode     = generateKode($conn);
             <span class="modal-title">Edit Barang</span>
             <a href="barang.php" class="modal-close"><i class="fa-solid fa-xmark"></i></a>
         </div>
-        <form method="POST">
+        <form method="POST" enctype="multipart/form-data">
             <input type="hidden" name="action" value="edit">
             <input type="hidden" name="id" value="<?= $editData['id'] ?>">
+            <input type="hidden" name="hapus_gambar" id="hapusGambarFlag" value="0">
             <div class="modal-body">
+                <div class="upload-gambar-box">
+                    <?php if (!empty($editData['gambar'])): ?>
+                        <img class="upload-preview" id="previewEdit" src="<?= UPLOAD_URL . htmlspecialchars($editData['gambar']) ?>" alt="preview">
+                    <?php else: ?>
+                        <div class="upload-preview-placeholder" id="previewEdit"><i class="fa-solid fa-image"></i></div>
+                    <?php endif; ?>
+                    <div class="upload-gambar-info">
+                        <label>Foto Barang</label>
+                        <input type="file" name="gambar" accept="image/jpeg,image/png,image/webp" onchange="previewGambar(this,'previewEdit')">
+                        <small>Kosongkan jika tidak ingin mengganti foto. JPG/PNG/WEBP, maks 2MB.</small>
+                        <?php if (!empty($editData['gambar'])): ?>
+                        <span class="link-hapus-gambar" onclick="hapusGambarEdit()"><i class="fa-solid fa-trash"></i> Hapus foto saat ini</span>
+                        <?php endif; ?>
+                    </div>
+                </div>
                 <div class="form-group" style="margin-bottom:12px">
                     <label>Kode Barang</label>
                     <input type="text" class="form-control" value="<?= $editData['kode_barang'] ?>" disabled>
@@ -249,7 +396,8 @@ $newKode     = generateKode($conn);
                     <div class="form-group"><label>Harga Jual</label><input type="number" name="harga_jual" class="form-control" value="<?= $editData['harga_jual'] ?>"></div>
                 </div>
                 <div class="form-grid form-grid-2" style="margin-bottom:12px">
-                    <div class="form-group"><label>Stok Saat Ini</label><input type="text" class="form-control" value="<?= $editData['stok'] ?>" disabled><span class="form-hint">Ubah via transaksi</span></div>
+                    <!-- DIPERBAIKI: Input stok sekarang bisa diedit (type="number" dan ada name="stok") -->
+                    <div class="form-group"><label>Stok Saat Ini</label><input type="number" name="stok" class="form-control" value="<?= $editData['stok'] ?>"><span class="form-hint">Bisa diubah langsung</span></div>
                     <div class="form-group"><label>Stok Minimum</label><input type="number" name="stok_minimum" class="form-control" value="<?= $editData['stok_minimum'] ?>"></div>
                 </div>
                 <div class="form-group">
@@ -265,6 +413,37 @@ $newKode     = generateKode($conn);
     </div>
 </div>
 <?php endif; ?>
+
+<script>
+function previewGambar(input, previewId) {
+    const el = document.getElementById(previewId);
+    if (!input.files || !input.files[0]) return;
+    const url = URL.createObjectURL(input.files[0]);
+    if (el.tagName === 'IMG') {
+        el.src = url;
+    } else {
+        const img = document.createElement('img');
+        img.className = 'upload-preview';
+        img.id = previewId;
+        img.src = url;
+        el.replaceWith(img);
+    }
+    // batalkan penghapusan gambar jika sebelumnya user klik "hapus foto"
+    const flag = document.getElementById('hapusGambarFlag');
+    if (flag) flag.value = '0';
+}
+
+function hapusGambarEdit() {
+    if (!confirm('Hapus foto barang ini?')) return;
+    document.getElementById('hapusGambarFlag').value = '1';
+    const el = document.getElementById('previewEdit');
+    const placeholder = document.createElement('div');
+    placeholder.className = 'upload-preview-placeholder';
+    placeholder.id = 'previewEdit';
+    placeholder.innerHTML = '<i class="fa-solid fa-image"></i>';
+    el.replaceWith(placeholder);
+}
+</script>
 
         </div>
     </main>
