@@ -11,23 +11,31 @@ $pesan = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $conn     = getConnection();
-    $username = $conn->real_escape_string(trim($_POST['username']));
-    $password = $_POST['password'];
+    $username = trim($_POST['username'] ?? '');
+    $password = $_POST['password'] ?? '';
 
-    $r = $conn->query("SELECT * FROM users WHERE username='$username' LIMIT 1");
+    $stmt = $conn->prepare("SELECT id, username, nama, password, role, aktif FROM users WHERE username = ? LIMIT 1");
+    $stmt->bind_param('s', $username);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
-    if ($r->num_rows === 1) {
-        $user = $r->fetch_assoc();
-        if (password_verify($password, $user['password'])) {
+    if ($user && password_verify($password, $user['password'])) {
+        if ((int)$user['aktif'] !== 1) {
+            $pesan = ['type' => 'danger', 'text' => 'Akun ini dinonaktifkan. Hubungi admin.'];
+        } else {
+            session_regenerate_id(true);
             $_SESSION['user_id']  = $user['id'];
             $_SESSION['username'] = $user['username'];
             $_SESSION['nama']     = $user['nama'];
+            $_SESSION['role']     = $user['role'] ?: 'kasir';
+            $conn->close();
             header('Location: index.php');
             exit;
         }
+    } else {
+        $pesan = ['type' => 'danger', 'text' => 'Username atau password salah!'];
     }
-
-    $pesan = ['type' => 'danger', 'text' => 'Username atau password salah!'];
     $conn->close();
 }
 ?>
